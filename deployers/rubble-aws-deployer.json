@@ -1,0 +1,915 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "AWS Stack for rubble, A Lambda scheduled Deepfield Config Backup Server",
+    "Parameters": {
+        "AvailabilityZone": {
+            "Description": "AWS Availability Zone One",
+            "Type": "String",
+            "Default": "eu-west-3a"
+        },
+        "VPCCIDR": {
+            "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+            "ConstraintDescription": "CIDR block parameter must be in the form x.x.x.x/16-28",
+            "Description": "CIDR block for the VPC.",
+            "Default": "100.72.100.0/22",
+            "Type": "String"
+        },
+        "PublicSubnetCIDR": {
+            "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+            "ConstraintDescription": "CIDR block for the NAT GW parameter must be in the form x.x.x.x/16-28",
+            "Description": "CIDR block for the public subnet",
+            "Default": "100.72.103.0/24",
+            "Type": "String"
+        },
+        "SiteName": {
+            "Description": "Site Name",
+            "Type": "String",
+            "Default": "rubble"
+        },
+        "VPCDOMAIN": {
+            "Description": "VCP domain type",
+            "Type": "String",
+            "Default": "default"
+        },
+        "RubbleNodeInstanceType": {
+            "Description": "rubble node Instance Type",
+            "Type": "String",
+            "Default": "m5.large"
+        },
+        "KeyName": {
+            "Description": "SSH Key Name. Default is rubblekey which should exist. change if you want to use a different existing key",
+            "Type": "AWS::EC2::KeyPair::KeyName",
+            "Default": "rubblekey"
+        },
+        "DeepfieldFQDN": {
+            "Description": "Deepfield fqdn or ip address",
+            "Type": "String",
+            "Default": "rubble-vlabs.deepfield.net"
+        },
+        "Deepfieldsshkey": {
+            "Description": "Deepfield SSH Public Key",
+            "Type": "String",
+            "Default": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDBTpIg2cRBg/d7Elzwfaju9H7IDy4w1PB0LwXRyGxXjbjkgqtK2lPrgrlJLqtnWjebQdCE3UjBl07At7Oiod+bRjp3BW/rPHHD8t0xAQMGjWJ+uRb7B7nb3jetx9QN/5IyROa7HTDTQkg7z5oBwhzk5VhAJGi84K6fL0E/JqJuNGN4WjOAZblgTLUCPeahoVynCtxUY0yxlKQGpQVwwznbvXW0zNnUcZf+4HIc9UigRbUpIr9GhCAg5zBWVt8XyFgrquuB1WXalLFFdHUegzjZL38Uj+7+ItCrSWdpqxf1v69688+UG3stMSvd0sqj1Yvw7J7I5TAVKV0uT6VooLygm0/nDyWQL6rZzGVN3Vg++rLB/GeatCL6fWx00YV5kkm/eP39ox7bH1AKA7MYO6O2nybxQLoDAYm2YCNvjUJU/x9SpHtQsuZrw4UpHPQLxOtaopo7x8ILjRn5FqfZrycL1sCeCtinLwDSryY6ggQJbqtwVDtjwDwm4XyaTIk/F78= support@master"
+        },
+        "Deepfieldsshuser": {
+            "Description": "Deepfield SSH user",
+            "Type": "String",
+            "Default": "support"
+        },
+        "S3BackupsBucketName": {
+            "Description": "Deepfield SSH user",
+            "Type": "String",
+            "Default": "deepfield-one-click-deployers"
+        },
+        "GitRepoURL": {
+            "Description": "Git Repo url to install. Default is https://github.com/sigreen-nokia/rubble.git",
+            "Type": "String",
+            "Default": "https://github.com/sigreen-nokia/rubble.git"
+        },
+        "ConfigBackupNumberOfNodes": {
+            "Description": "Number of instances to deploy in the auto scaling group, either on schedule if a schedule is set, or initialy if no schedule is set. Default is 1",
+            "Type": "String",
+            "Default": "1"
+         },
+         "ScriptToRun": {
+            "Description": "Script to run once the instance is up and the git is installed",
+            "Type": "String",
+            "Default": "/home/ubuntu/rubble/runme.sh"
+         },
+         "EmailServerURL": {
+            "Description": "smtp url for your email account",
+            "Type": "String"
+         },
+         "EmailUsername": {
+            "Description": "smtp email account user name",
+            "Type": "String"
+         },
+         "EmailPassword": {
+            "Description": "smtp email account user name",
+            "Type": "String"
+         },
+         "EmailFromAddress": {
+            "Description": "Email address to mark the emails as sent from, for icloud and gmail its the same as EmailUsername, for AWS SES this will need to be validated",
+            "Type": "String"
+         },
+         "EmailToAddress": {
+            "Description": "Email address to send the reports to",
+            "Type": "String"
+         },
+         "DebugLogs": {
+            "Description": "if true we will enable SYS_DEBUG",
+            "Type": "String",
+            "Default": "false"
+         },
+         "ConfigBackupLambdaScheduleStartExpression": {
+            "Description": "ConfigBackup CloudWatch Start Events (in UTC not GMT as shown in the console) for example cron(50 17 * * ? *) will scale up the ASG to ConfigBackupNumberOfNodes. set to null to disable scheduing and scale up on launch\n",
+            "Default": "cron(55 17 * * ? *)",
+            "Type": "String"
+         },
+         "ConfigBackupLambdaScheduleStopExpression": {
+            "Description": "ConfigBackup CloudWatch Stop Event for example cron(50 18 * * ? *) will scale down the ASG to 0 nodes\n",
+            "Default": "cron(55 18 * * ? *)",
+            "Type": "String"
+         }
+    },
+        "Mappings": {
+        "AWSRegionArch2AMI": {
+            "ca-central-1": { "UBUNTU20XHVM": "ami-0e03f88d63f0294ab" },
+            "ap-southeast-1": { "UBUNTU20XHVM": "ami-05dca1925ba40898e" },
+            "ap-southeast-2": { "UBUNTU20XHVM": "ami-02e68dfff738a90be" },
+            "eu-west-1": { "UBUNTU20XHVM": "ami-09634b5569ee59efb" },
+            "eu-west-2": { "UBUNTU20XHVM": "ami-0f83016656f175553" },
+            "eu-west-3": { "UBUNTU20XHVM": "ami-0f1b4f7ea43c94cde" },
+            "eu-central-1": { "UBUNTU20XHVM": "ami-09b54ba4514d9f6d8" },
+            "cn-north-1": { "UBUNTU20XHVM": "ami-07f6ce9caf6d3d570" },
+            "cn-northwest-1": { "UBUNTU20XHVM": "ami-07300926b98226eed" },
+            "us-east-1": { "UBUNTU20XHVM": "ami-03a4942b8fcc1f29d" },
+            "us-east-2": { "UBUNTU20XHVM": "ami-076f593d6b19a7f59" },
+            "us-west-1": { "UBUNTU20XHVM": "ami-0435c64943c5ff088" },
+            "us-west-2": { "UBUNTU20XHVM": "ami-079467ea8dd191734" },
+            "ap-northeast-1": { "UBUNTU20XHVM": "ami-03db80d0cb99a0d1f" },
+            "eu-north-1": { "UBUNTU20XHVM": "ami-0cebd2d31b3ef9413" },
+            "eu-south-1": { "UBUNTU20XHVM": "ami-086ec3c77edd5971c" },
+            "ap-south-1": { "UBUNTU20XHVM": "ami-0838bc34dd3bae25e" },
+            "ap-northeast-2": { "UBUNTU20XHVM": "ami-03f70dc46b50a1648" },
+            "ap-northeast-3": { "UBUNTU20XHVM": "ami-05b0e560d1c7c2aa9" },
+            "af-south-1": { "UBUNTU20XHVM": "ami-0ca0ec528ec4afc2b" },
+            "me-south-1": { "UBUNTU20XHVM": "ami-0dae72412254ca2f3" },
+            "sa-east-1": { "UBUNTU20XHVM": "ami-07b48a61d685adada" }
+        }
+    },
+    "Conditions": {
+        "ScheduleSet": {"Fn::Not": [{"Fn::Equals" : [{"Ref" : "ConfigBackupLambdaScheduleStartExpression"}, "null"]}]}
+    },
+    "Resources": {
+        "VPC1": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": {
+                    "Ref": "VPCCIDR"
+                },
+                "InstanceTenancy": {
+                    "Ref": "VPCDOMAIN"
+                },
+                "EnableDnsHostnames": "True",
+                "EnableDnsSupport": "True",
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                ".",
+                                [
+                                    "Rubble",
+                                    {
+                                        "Ref": "SiteName"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "VPC1V6Cidr": {
+            "Type": "AWS::EC2::VPCCidrBlock",
+            "DependsOn": "VPC1",
+            "Properties": {
+                "AmazonProvidedIpv6CidrBlock": true,
+                "VpcId": {
+                    "Ref": "VPC1"
+                }
+            }
+        },
+        "PublicSubnet": {
+            "Type": "AWS::EC2::Subnet",
+            "DependsOn": "VPC1V6Cidr",
+            "Properties": {
+                "AvailabilityZone": {
+                    "Ref": "AvailabilityZone"
+                },
+                "VpcId": {
+                    "Ref": "VPC1"
+                },
+                "CidrBlock": {
+                    "Ref": "PublicSubnetCIDR"
+                },
+                "Ipv6CidrBlock": {
+                    "Fn::Sub": [
+                        "${VpcPart}${SubnetPart}",
+                        {
+                            "SubnetPart": "01::/64",
+                            "VpcPart": {
+                                "Fn::Select": [
+                                    0,
+                                    {
+                                        "Fn::Split": [
+                                            "00::/56",
+                                            {
+                                                "Fn::Select": [
+                                                    0,
+                                                    {
+                                                        "Fn::GetAtt": [
+                                                            "VPC1",
+                                                            "Ipv6CidrBlocks"
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "AssignIpv6AddressOnCreation": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                ".",
+                                [
+                                    "RubblePublicSN1",
+                                    {
+                                        "Ref": "SiteName"
+                                    },
+                                    {
+                                        "Ref": "AvailabilityZone"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "InternetGateway": {
+            "Type": "AWS::EC2::InternetGateway",
+            "Properties": {
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                ".",
+                                [
+                                    "RubbleInternetGW1",
+                                    {
+                                        "Ref": "SiteName"
+                                    },
+                                    {
+                                        "Ref": "AvailabilityZone"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "AttachGateway": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "VPC1"
+                },
+                "InternetGatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "EgressV6InternetGateway": {
+            "Type": "AWS::EC2::EgressOnlyInternetGateway",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "VPC1"
+                }
+            }
+        },
+        "PublicRouteTable1": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "VPC1"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                ".",
+                                [
+                                    "RubblePubicSubnetRouteTable1",
+                                    {
+                                        "Ref": "SiteName"
+                                    },
+                                    {
+                                        "Ref": "AvailabilityZone"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "PublicRoute": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": "AttachGateway",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "PublicRouteTable1"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "PublicRouteV6": {
+            "Type": "AWS::EC2::Route",
+            "Properties": {
+                "DestinationIpv6CidrBlock": "::/0",
+                "RouteTableId": {
+                    "Ref": "PublicRouteTable1"
+                },
+                "GatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "PublicSubnetRouteTableAssociation": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "PublicSubnet"
+                },
+                "RouteTableId": {
+                    "Ref": "PublicRouteTable1"
+                }
+            }
+        },
+        "RubbleConfigBackupLogGroup": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "RetentionInDays": 5,
+                "LogGroupName" : "rubble-configbackup"
+            }
+        },
+        "SecurityGroupRubble": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "VpcId": { "Ref": "VPC1" },
+                "GroupDescription": "Security group for Rubble ConfigBackup Instances",
+                "GroupName": { "Fn::Join": [".", ["Rubble_ConfigBackup_SG1", { "Ref": "SiteName" }, { "Ref": "AvailabilityZone" }]] },
+                "SecurityGroupEgress": [
+                    {
+                        "IpProtocol": "-1",
+                        "FromPort": "-1",
+                        "ToPort": "-1",
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "allow all outbound traffic"
+		            },
+                    {
+                        "IpProtocol": "-1",
+                        "FromPort": "-1",
+                        "ToPort": "-1",
+                        "CidrIpv6": "::/0", 
+                        "Description": "allow all IPV6 outbound traffic"
+		            }
+		        ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": { "Fn::Join" : [ ".", [ "Rubble_ConfigBackup_Security_Group", { "Ref" : "SiteName" }, { "Ref" : "AvailabilityZone" } ] ] }
+                    }
+                ]
+            }
+        },
+        "SGIngressSecurityGroupRubble": {
+            "Type": "AWS::EC2::SecurityGroupIngress",
+            "Properties": {
+                "GroupId": {
+                    "Ref": "SecurityGroupRubble"
+                },
+                "IpProtocol": "-1",
+                "FromPort": "-1",
+                "ToPort": "-1",
+                "SourceSecurityGroupId": {
+                    "Ref": "SecurityGroupRubble"
+                },
+                "Description": "loopback rule"
+            }
+        },
+        "rubbleConfigBackupNodeLaunchConfig" : {
+           "Type" : "AWS::AutoScaling::LaunchConfiguration",
+           "Properties" : {
+              "ImageId": {
+                 "Fn::FindInMap" : ["AWSRegionArch2AMI", {"Ref" : "AWS::Region"}, "UBUNTU20XHVM"]
+              },
+              "SecurityGroups" : [ { "Ref" : "myEC2SecurityGroup" }, "myExistingEC2SecurityGroup" ],
+              "AssociatePublicIpAddress" : true,
+              "InstanceType": {
+                 "Ref": "RubbleNodeInstanceType"
+              },
+              "BlockDeviceMappings": [
+                 {
+                      "DeviceName": "/dev/sda1",
+                      "Ebs": {
+                      "VolumeSize": "30"
+                      }
+                 }
+              ],
+              "KeyName": {
+                 "Ref": "KeyName"
+              },
+              "IamInstanceProfile": { "Ref": "rubbleInstanceProfile" },
+              "SecurityGroups"        : [ { "Ref" : "SecurityGroupRubble" } ],
+              "LaunchConfigurationName" : "rubbleConfigBackupNodeLaunchConfig",
+              "UserData": {
+                 "Fn::Base64": {
+                   "Fn::Join": [
+                       "",
+                       [ 
+                         "#!/bin/bash -x\n",
+                         "exec > /tmp/node-install.log 2>&1\n",
+                               "#################\n",
+                               "#install Rubble ConfigBackup node\n",
+                               "#################\n",
+                               "swapoff -a\n",
+                               "cd /root\n",
+                               "apt-get update\n",
+                               "apt-get remove -y --purge unattended-upgrades\n",
+                               "apt-get -y install jq fop zip unzip\n",
+                               "apt-get -y install openvpn\n",
+                               "apt install -y python3-pip \n",
+                               "sudo apt install -y awscli \n",
+                               "curl -o /root/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/debian/amd64/latest/amazon-cloudwatch-agent.deb\n",
+                               "dpkg -i -E /root/amazon-cloudwatch-agent.deb\n",
+                               "cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF\n",
+                               "{\n",
+                               "     \"agent\": {\n",
+                               "         \"metrics_collection_interval\": 60\n",
+                               "     },\n",
+                               "     \"logs\": {\n",
+                               "         \"logs_collected\": {\n",
+                               "             \"files\": {\n",
+                               "                 \"collect_list\": [\n",
+                               "                     {\n",
+                               "                         \"file_path\": \"/var/log/rubble.log\",\n",
+                               "                         \"log_group_name\": \"rubble-configbackup\",\n",
+                               "                         \"log_stream_name\": \"{hostname}/syslog\",\n",
+                               "                         \"timestamp_format\" :\"%b %d %H:%M:%S\"\n",
+                               "                     }\n",
+                               "                 ]\n",
+                               "             }\n",
+                               "         }\n",
+                               "     }\n",
+                               "}\n",
+                               "EOF\n", 
+                               "systemctl enable amazon-cloudwatch-agent.service\n",
+                               "systemctl start amazon-cloudwatch-agent.service\n",
+                               "####### msmtp setup for emailing reports################\n",
+                               "sudo apt-get -y install msmtp msmtp-mta ca-certificates\n",
+                               "sudo mkdir -p /etc/msmtp\n",
+                               "sudo mkdir -p /var/log/msmtp\n",
+                               "cat > /etc/msmtp/rubble0 <<EOF\n",
+                               "# Define here some settings that can be useful for every account\n",
+                               "defaults\n",
+                               "        logfile /var/log/msmtp/general.log\n",
+                               "# Settings for rubble0 account\n",
+                               "account rubble0\n",
+                               "        protocol smtp\n",
+                               "        host ",{ "Ref" : "EmailServerURL" }, "\n",
+                               "        tls on\n",
+                               "        tls_trust_file /etc/ssl/certs/ca-certificates.crt\n",
+                               "        port 587\n",
+                               "        auth login\n",
+                               "        user ",{ "Ref" : "EmailUsername" }, "\n",
+                               "        password ",{ "Ref" : "EmailPassword" }, "\n",
+                               "        from ",{ "Ref" : "EmailFromAddress" }, "\n",
+                               "        logfile /var/log/msmtp/rubble0.log\n",
+                               "# If you don't use the -a parameter in your command line,\n",
+                               "# the default account rubble0 will be used.\n",
+                               "account default: rubble0\n",
+                               "EOF\n",
+                               "sudo DEBIAN_FRONTEND=noninteractive apt-get -y install mutt\n",
+                               "cat > /root/muttrc <<EOF\n",
+                               "set sendmail=\"/usr/bin/msmtp --file=/etc/msmtp/rubble0\"\n",
+                               "set use_from=yes\n",
+                               "set realname=\"",{ "Ref" : "EmailFromAddress" }, "\"\n",
+                               "set from=\"",{ "Ref" : "EmailFromAddress" }, "\"\n",
+                               "set envelope_from=yes\n",
+                               "EOF\n",
+                               "cat > /root/emailmessage.txt <<EOF\n",
+                               "From:  \"",{ "Ref" : "EmailFromAddress" }, "\"\n",
+                               "Subject: icloud attachment Test\n",
+                               "This message was sent using icloud\n",
+                               "EOF\n",
+                               "#sed -i -e \"s/\\[EmailToAddress\\]/", { "Ref": "EmailToAddress" }, "/g\" /root/nmap-runner.sh \n",
+                               "cat > /root/nmap-runner.sh <<EOF\n",
+                               "#!/bin/bash -x \n",
+                               "#redirect stdout/stderr to a file \n",
+                               "exec 3>&1 4>&2 \n",
+                               "trap 'exec 2>&4 1>&3' 0 1 2 3 \n",
+                               "exec 1>/var/log/rubble.log 2>&1 \n",
+                               "cd /root \n",
+                               "#generate the IPV4 nmap reports \n",
+                               "mkdir -p reports-xml \n",
+                               "mkdir -p reports-pdf \n",
+                               "DATEANDTIME=\"$(date +\"%m-%d-%y-%T\")\" \n",
+                               "HOSTNAME_PREFIX=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname | cut -d\".\" -f1) \n",
+                               "for k in $(jq '.rubble.nmap.report | keys | .[]' rubble-config.json); do \n",
+                               "        NMAPOPTION=$(jq -r \".rubble.nmap.report[$k] .command\" rubble-config.json); \n",         
+                               "        rm ./rubble-endpoints \n",
+                               "        if [[ $NMAPOPTION =~ \"-6\" ]]; then \n",
+                               "                echo \"This test option includes IPV6 -6 so lets setup for that\" \n",
+                               "                for IP in $(jq -r \".rubble.nmap.ipv6[] .address\" rubble-endpoints.json); do \n",
+                               "                        echo $IP >> ./rubble-endpoints \n",
+                               "                done \n",
+                               "                XMLREPORTFILENAME=nmap-scan-ipv6-$HOSTNAME_PREFIX-$(jq -r \".rubble.nmap.report[$k] .prefix\" rubble-config.json)-$DATEANDTIME.xml; \n",
+                               "                PDFREPORTFILENAME=nmap-scan-ipv6-$HOSTNAME_PREFIX-$(jq -r \".rubble.nmap.report[$k] .prefix\" rubble-config.json)-$DATEANDTIME.pdf; \n",
+                               "        else     \n",
+                               "                echo \"This test option does include IPV6 option -6 so run it as ipv4\" \n",
+                               "                XMLREPORTFILENAME=nmap-scan-ipv4-$HOSTNAME_PREFIX-$(jq -r \".rubble.nmap.report[$k] .prefix\" rubble-config.json)-$DATEANDTIME.xml; \n",
+                                "               PDFREPORTFILENAME=nmap-scan-ipv4-$HOSTNAME_PREFIX-$(jq -r \".rubble.nmap.report[$k] .prefix\" rubble-config.json)-$DATEANDTIME.pdf; \n",
+                               "                for IP in $(jq -r \".rubble.nmap.ipv4[] .address\" rubble-endpoints.json); do \n",
+                               "                        echo $IP >> ./rubble-endpoints \n",
+                               "                done \n",
+                               "        fi \n",
+                               "                echo \"This test includes IPV6 option -6 so lets setup for that\" \n",
+                               "        echo \"Debug: k = $k\"; \n",
+                               "        echo \"Debug: XMLREPORTFILENAME $XMLREPORTFILENAME\"; \n",
+                               "        echo \"Debug: PDFREPORTFILENAME $PDFREPORTFILENAME\"; \n",
+                               "        echo \"Debug: NMAPOPTION $NMAPOPTION\"; \n",
+                               "        nmap $NMAPOPTION -oX ./reports-xml/$XMLREPORTFILENAME -iL ./rubble-endpoints \n",
+                               "        sed -i '/DOCTYPE/d' ./reports-xml/$XMLREPORTFILENAME; \n",
+                               "        fop -xml ./reports-xml/$XMLREPORTFILENAME -xsl nmap-fo.xsl -pdf ./reports-pdf/$PDFREPORTFILENAME; \n",
+                               "done  \n",
+                               "echo \" add TCP IPV6 Scan\" \n",
+                               "sudo chown root:root /etc/msmtp/rubble0  \n",
+                               "sudo chmod 0600 /root/muttrc  \n",
+                               "#get todays list of reports and email them \n",
+                               "TODAYS_REPORTS=$(find reports-pdf/* -daystart -ctime 0 -print | tr '\n' ' ') \n",
+                               "mutt -F /root/muttrc -a $TODAYS_REPORTS -s \"Rubble NMAP Report\" -- mr.simon.john.green@gmail.com < emailmessage.txt \n",
+                               "aws s3 cp /root/reports-xml/ s3://rubble-s3stack-gn03ijuq24qf-s3reportbucket-1xoxf7cdfk4do/reports-xml/ --recursive \n",
+                               "aws s3 cp /root/reports-pdf/ s3://rubble-s3stack-gn03ijuq24qf-s3reportbucket-1xoxf7cdfk4do/reports-pdf/ --recursive \n",
+                               "rm /root/reports-xml/* \n",
+                               "rm /root/reports-pdf/* \n",
+                               "echo \"All Done\" \n",
+                               "EOF\n",
+                               "touch /var/log/rubble.log\n",
+                               "cat > /etc/logrotate.d/rubble <<EOF\n",
+                               "/var/log/rubble.log {\n",
+                               "  rotate 5 \n",
+                               "  weekly \n",
+                               "  compress\n",
+                               "  missingok\n",
+                               "  notifempty\n",
+                               "}\n",
+                               "EOF\n",
+                               "cat > /etc/systemd/system/rubble.service <<EOF\n",
+                               "[Unit]\n",
+                               "After=network.service\n",
+                               "\n",
+                               "[Service]\n",
+                               "ExecStart=/root/nmap-runner.sh\n",
+                               "\n",
+                               "[Install]\n",
+                               "WantedBy=default.target\n",
+                               "EOF\n",
+                               "chmod u+x /root/nmap-runner.sh\n",
+                               "chmod 664 /etc/systemd/system/rubble.service\n",
+                               "systemctl daemon-reload\n",
+                               "systemctl enable rubble.service\n",
+                               "systemctl start rubble.service\n",
+                               "sudo pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz\n",
+                               "#pull the git repo indicated in cloudformation\n",
+                               "su - ubuntu \n", 
+                               "runuser -l  ubuntu -c 'git clone ", { "Ref": "GitRepoURL" }, "'\n",
+                               "cd /home/ubuntu/* \n",
+                               "echo \"", { "Ref": "DeepfieldFQDN" }, "\" > var-DeepfieldFQDN \n",
+                               "echo \"", { "Ref": "Deepfieldsshuser" }, "\" > var-Deepfieldsshuser \n",
+                               "echo \"", { "Ref": "Deepfieldsshkey" }, "\" > var-Deepfieldsshkey \n",
+                               "#Run the git script passed to us from cloudformation\n",
+                               "runuser -l  ubuntu -c 'source ", { "Ref": "ScriptToRun" }, "' \n",
+                               "/usr/local/bin/cfn-signal -e $? ",
+                                   "  --stack ", { "Ref": "AWS::StackName" },
+                                   "  --resource rubbleConfigBackupNodeAutoScalingGroup " ,
+                                   "  --region ", { "Ref" : "AWS::Region" }, "\n"
+                       ]
+                    ]
+                 }
+             }
+           }
+        },
+        "rubbleConfigBackupNodeAutoScalingGroup" : {
+           "Type" : "AWS::AutoScaling::AutoScalingGroup",
+           "Properties" : {
+              "VPCZoneIdentifier" : [ { "Ref": "PublicSubnet" } ],
+              "LaunchConfigurationName" : { "Ref" : "rubbleConfigBackupNodeLaunchConfig" },
+              "MinSize" : { "Ref": "ConfigBackupNumberOfNodes" },
+              "MaxSize" : { "Ref": "ConfigBackupNumberOfNodes" },
+              "Tags": [
+                   {
+                       "Key": "Name",
+                       "Value": { "Fn::Join" : [ ".", [ "Rubble_configbackup_autoscaling_group", { "Ref" : "SiteName" }, { "Ref" : "AvailabilityZone" } ] ] },
+                       "PropagateAtLaunch": "true"
+                   }
+               ]
+           },
+           "CreationPolicy": {
+              "ResourceSignal": {
+                "Count": {"Ref": "ConfigBackupNumberOfNodes"},
+                "Timeout": "PT30M"
+              }
+           }
+        },
+        "rubbleRole": {
+           "Type": "AWS::IAM::Role",
+           "Properties": {
+              "AssumeRolePolicyDocument": {
+                 "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {
+                       "Service": ["ec2.amazonaws.com"]
+                    },
+                    "Action": ["sts:AssumeRole"]
+                 }]
+              },
+              "Path": "/"
+           }
+        },
+        "rubbleInstanceProfile": {
+           "Type": "AWS::IAM::InstanceProfile",
+           "Properties": {
+              "Path": "/",
+              "Roles": [{ "Ref": "rubbleRole" }]
+           }
+        },
+        "rubbleRolePolicies":{
+            "Type":"AWS::IAM::Policy",
+            "Properties":{
+               "PolicyName":"rubbleIAMPolicy",
+               "PolicyDocument":{
+                  "Statement":[
+                     {
+                        "Effect":"Allow",
+                        "Action":[
+                           "ec2:DescribeInstances",
+                           "autoscaling:DescribeAutoScalingInstances"
+                        ],
+                        "Resource":"*"
+                     },
+                     {
+                        "Effect":"Allow",
+                        "Action":[
+                           "route53:ChangeResourceRecordSets"
+                        ],
+                        "Resource":"arn:aws:route53:::hostedzone/*"
+                     },
+                     {
+                        "Effect":"Allow",
+                        "Action":[
+                           "route53:ListHostedZones",
+                           "route53:ListResourceRecordSets"
+                        ],
+                        "Resource":"*"
+                     },
+                     {
+                        "Effect":"Allow",
+                        "Action":[
+                           "s3:*"
+                        ],
+                        "Resource":"*"
+                     },
+                     {
+                        "Effect":"Allow",
+                        "Action":[
+                           "logs:CreateLogStream",
+                           "logs:DescribeLogStreams",
+                           "logs:PutLogEvents",
+                           "cloudwatch:PutMetricData"
+                        ],
+                        "Resource":"*"
+                     }
+                  ]
+               },
+               "Roles":[
+                  {
+                     "Ref":"rubbleRole"
+                  }
+               ]
+            }
+        },
+
+
+
+
+
+
+        "LambdaExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                           "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                ],
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "S3Access",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "autoscaling:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "LogsAccess",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*Helper*"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaScheduleStart": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "Rubble Lambda Start instance function..\n",
+                "ScheduleExpression": {
+                    "Ref": "ConfigBackupLambdaScheduleStartExpression"
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaFunction.Arn}"
+                        },
+                        "Id": "LambdaScheduleStart",
+                        "Input": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "{\"aws_region\":\"", { "Ref" : "AWS::Region" }, "\",",
+                                    "\"asg_name\":\"",{ "Ref": "rubbleConfigBackupNodeAutoScalingGroup" }, "\",",
+                                    "\"min\":\"",{ "Ref": "ConfigBackupNumberOfNodes" }, "\",",
+                                    "\"desired\":\"",{ "Ref": "ConfigBackupNumberOfNodes" }, "\",",
+                                    "\"max\":\"",{ "Ref": "ConfigBackupNumberOfNodes" }, "\"}"
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaScheduleStartPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaFunction.Arn}"
+                },
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${LambdaScheduleStart.Arn}"
+                }
+            }
+        },
+        "LambdaScheduleStop": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "Rubble Lambda Stop instance function..\n",
+                "ScheduleExpression": {
+                    "Ref": "ConfigBackupLambdaScheduleStopExpression"
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaFunction.Arn}"
+                        },
+                        "Id": "LambdaScheduleStop",
+                        "Input": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "{\"aws_region\":\"", { "Ref" : "AWS::Region" }, "\",",
+                                    "\"asg_name\":\"",{ "Ref": "rubbleConfigBackupNodeAutoScalingGroup" }, "\",",
+                                    "\"min\":\"0\",",
+                                    "\"desired\":\"0\",",
+                                    "\"max\":\"0\"}"
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaScheduleStopPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaFunction.Arn}"
+                },
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${LambdaScheduleStop.Arn}"
+                }
+            }
+        },
+        "LambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Lambda function to schedule rubble autoscaling groups\n",
+                "Code": {
+                      "ZipFile": {
+                          "Fn::Join": [
+                              "\n",
+                              [
+                                  "import boto3",
+                                  "import os",
+                                  "# Boto Connection",
+                                  "asg = boto3.client('autoscaling')",
+                                  "def lambda_handler(event, context):",
+                                  "  print(event)",
+                                  "  response = asg.update_auto_scaling_group(AutoScalingGroupName=event['asg_name'],MinSize=int(event['min']),DesiredCapacity=int(event['desired']),MaxSize=int(event['max']))",
+                                  "  print('Rubble Lamdba Scheduler Completed!')",
+                                  "  return 'Rubble Lamdba Scheduler Completed!'"
+                              ]
+                          ]
+                      }
+                },
+                "Handler": "index.lambda_handler",
+                "MemorySize": 128,
+                "Role": {
+                    "Fn::Sub": "${LambdaExecutionRole.Arn}"
+                },
+                "Runtime": "python3.12"
+            }
+        }
+
+
+
+
+
+
+
+
+    },
+    "Outputs": {
+        "Note1": {
+            "Description": "NA",
+            "Value": "All done, have fun backing up your deepfield cuslter configs" 
+        },
+        "AutoScalingID": {
+            "Description": "Autoscaling Group ID for the Lamda scaler",
+            "Value": {"Ref": "rubbleConfigBackupNodeAutoScalingGroup"}
+        }
+    }
+}
